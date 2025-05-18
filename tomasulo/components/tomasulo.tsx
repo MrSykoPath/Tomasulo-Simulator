@@ -143,6 +143,17 @@ class Instruction {
       throw new Error("Invalid register number (must be 0-7)");
     }
   }
+
+  clone(): Instruction {
+    return new Instruction({
+      opcode: this.opcode,
+      rA: this.rA,
+      rB: this.rB,
+      rC: this.rC,
+      offset: this.offset,
+      label: this.label,
+    });
+  }
 }
 
 class ReservationStation {
@@ -152,8 +163,8 @@ class ReservationStation {
   Operation: string | null = null; // Operation to be performed
   Vj: number | null = null;
   Vk: number | null = null;
-  Qj: number | null = null; // Tag of RS producing Vj
-  Qk: number | null = null; // Tag of RS producing Vk
+  Qj: string | null = null; // Tag of RS producing Vj
+  Qk: string | null = null; // Tag of RS producing Vk
   instruction: Instruction | null = null; // Address to store instruction
   result: number | null = null; // Result of the operation
   PC_Original: number | null = null; // Original PC of the instruction
@@ -233,7 +244,7 @@ class Tomasulo {
     this.RS.push(new ReservationStation(name, unit, cycles_needed));
   }
 
-  Issue() {
+  Issue(): void {
     // Fetch instruction from memory instead of Instructions array
     if (this.isJumpPending) {
       return;
@@ -256,12 +267,12 @@ class Tomasulo {
             }
             element.busy = true;
             element.Operation = "LOAD";
-            element.instruction = instr;
+            element.instruction = instr.clone();
             element.PC_Original = this.PC;
             this.RegisterStatus[instr.getrA()!] = element.name;
             element.A = instr.getOffset() ?? null;
             this.IssuedTracker.push({
-              Instruction: instr,
+              Instruction: instr.clone(),
               clock: this.clock,
               RS: element,
             });
@@ -292,11 +303,11 @@ class Tomasulo {
               element.Vk = null;
             }
             this.IssuedTracker.push({
-              Instruction: instr,
+              Instruction: instr.clone(),
               clock: this.clock,
               RS: element,
             });
-            element.instruction = instr;
+            element.instruction = instr.clone();
             element.PC_Original = this.PC;
             element.Operation = "STORE";
             if (this.isBranchPending) {
@@ -339,12 +350,12 @@ class Tomasulo {
               element.Vk = null;
             }
             this.IssuedTracker.push({
-              Instruction: instr,
+              Instruction: instr.clone(),
               clock: this.clock,
               RS: element,
             });
             element.busy = true;
-            element.instruction = instr;
+            element.instruction = instr.clone();
             element.PC_Original = this.PC;
             element.Operation =
               instr.getOpcode() == OpCode.ADD
@@ -380,7 +391,7 @@ class Tomasulo {
               element.Vk = null;
             }
             this.IssuedTracker.push({
-              Instruction: instr,
+              Instruction: instr.clone(),
               clock: this.clock,
               RS: element,
             });
@@ -390,7 +401,7 @@ class Tomasulo {
             }
             element.Operation = "BEQ";
             element.busy = true;
-            element.instruction = instr;
+            element.instruction = instr.clone();
             element.PC_Original = this.PC;
             this.isBranchPending = true;
             this.branchInstructions++;
@@ -411,13 +422,16 @@ class Tomasulo {
             element.Operation =
               instr.getOpcode() == OpCode.CALL ? "CALL" : "RET";
             this.IssuedTracker.push({
-              Instruction: instr,
+              Instruction: instr.clone(),
               clock: this.clock,
               RS: element,
             });
-            element.instruction = instr;
+            element.instruction = instr.clone();
             element.PC_Original = this.PC;
-            this.isBranchPending = true;
+            this.isJumpPending = true;
+            if (this.isBranchPending) {
+              this.IssuedAfterBranch++;
+            }
             break;
           }
         }
@@ -425,24 +439,27 @@ class Tomasulo {
     }
   }
 
-  execute() {
+  execute(): void {
     for (const element of this.RS) {
       if (element.unit == OpCode.LOAD) {
         if (
           element.busy == true &&
-          element.cycles_passed == element.cycles_needed_to_compute_address
+          element.cycles_passed == element.cycles_needed_to_compute_address &&
+          this.isBranchPending == false
         ) {
           element.A = element.Vj! + element.A!;
         }
 
         if (
           element.busy == true &&
-          element.cycles_passed == element.cycles_needed
+          element.cycles_passed == element.cycles_needed &&
+          this.isBranchPending == false
         ) {
           element.result = this.Memory[element.A!];
           this.ExecutedTracker.push({
-            Instruction: element.instruction!,
+            Instruction: element.instruction!.clone(),
             clock: this.clock,
+            RS: element,
           });
         }
       }
@@ -452,14 +469,16 @@ class Tomasulo {
       if (element.unit == OpCode.STORE) {
         if (
           element.busy == true &&
-          element.cycles_passed == element.cycles_needed_to_compute_address
+          element.cycles_passed == element.cycles_needed_to_compute_address &&
+          this.isBranchPending == false
         ) {
           element.A = element.Vj! + element.A!;
         }
 
         if (
           element.busy == true &&
-          element.cycles_passed == element.cycles_needed
+          element.cycles_passed == element.cycles_needed &&
+          this.isBranchPending == false
         ) {
           this.Memory[element.A!] = element.Vk!;
           element.busy = false;
@@ -468,8 +487,9 @@ class Tomasulo {
           element.Vj = null;
           element.Vk = null;
           this.ExecutedTracker.push({
-            Instruction: element.instruction!,
+            Instruction: element.instruction!.clone(),
             clock: this.clock,
+            RS: element,
           });
         }
       }
@@ -484,6 +504,22 @@ class Tomasulo {
           if (element.Vj == element.Vk) {
             this.PC = element.A! + element.PC_Original! + 1;
             this.isBranchPending = false;
+            this.branchMispredictions++;
+            this.IssuedTracker.splice(
+              this.IssuedTracker.length - this.IssuedAfterBranch
+            );
+            this.IssuedAfterBranch = 0;
+            for (const rs of this.RS) {
+              if (rs.PC_Original! > element.PC_Original!) {
+                rs.busy = false;
+                rs.result = null;
+                rs.instruction = null;
+                rs.Qj = null;
+                rs.Qk = null;
+                rs.Vj = null;
+                rs.Vk = null;
+              }
+            }
           } else {
             this.PC = element.PC_Original! + 1;
             this.isBranchPending = false;
@@ -494,8 +530,9 @@ class Tomasulo {
           element.Vj = null;
           element.Vk = null;
           this.ExecutedTracker.push({
-            Instruction: element.instruction!,
+            Instruction: element.instruction!.clone(),
             clock: this.clock,
+            RS: element,
           });
         }
       }
@@ -505,17 +542,18 @@ class Tomasulo {
         //CALL and RET
         if (
           element.busy == true &&
-          element.cycles_passed == element.cycles_needed
+          element.cycles_passed == element.cycles_needed &&
+          this.isBranchPending == false
         ) {
           if (element.Operation == "CALL") {
             this.Registers[1] = element.PC_Original! + 1;
             this.PC = element.A!;
-            this.isBranchPending = false;
+            this.isJumpPending = false;
           }
 
           if (element.Operation == "RET") {
             this.PC = element.A!;
-            this.isBranchPending = false;
+            this.isJumpPending = false;
           }
           element.busy = false;
           element.Qj = null;
@@ -523,8 +561,9 @@ class Tomasulo {
           element.Vj = null;
           element.Vk = null;
           this.ExecutedTracker.push({
-            Instruction: element.instruction!,
+            Instruction: element.instruction!.clone(),
             clock: this.clock,
+            RS: element,
           });
         }
       }
@@ -532,7 +571,8 @@ class Tomasulo {
       if (element.unit == OpCode.ADD) {
         if (
           element.busy == true &&
-          element.cycles_passed == element.cycles_needed
+          element.cycles_passed == element.cycles_needed &&
+          this.isBranchPending == false
         ) {
           if (element.Operation == "ADD") {
             element.result = element.Vj! + element.Vk!;
@@ -541,8 +581,9 @@ class Tomasulo {
             element.result = element.Vj! - element.Vk!;
           }
           this.ExecutedTracker.push({
-            Instruction: element.instruction!,
+            Instruction: element.instruction!.clone(),
             clock: this.clock,
+            RS: element,
           });
         }
       }
@@ -550,12 +591,14 @@ class Tomasulo {
       if (element.unit == OpCode.NOR) {
         if (
           element.busy == true &&
-          element.cycles_passed == element.cycles_needed
+          element.cycles_passed == element.cycles_needed &&
+          this.isBranchPending == false
         ) {
           element.result = ~(element.Vj! | element.Vk!);
           this.ExecutedTracker.push({
-            Instruction: element.instruction!,
+            Instruction: element.instruction!.clone(),
             clock: this.clock,
+            RS: element,
           });
         }
       }
@@ -563,15 +606,81 @@ class Tomasulo {
       if (element.unit == OpCode.MUL) {
         if (
           element.busy == true &&
-          element.cycles_passed == element.cycles_needed
+          element.cycles_passed == element.cycles_needed &&
+          this.isBranchPending == false
         ) {
           element.result = element.Vj! * element.Vk!;
           this.ExecutedTracker.push({
-            Instruction: element.instruction!,
+            Instruction: element.instruction!.clone(),
             clock: this.clock,
+            RS: element,
           });
         }
       }
     }
+  }
+  WriteBack(): void {
+    //Priotitize older instructions to be written back first
+    for (const element of this.IssuedTracker) {
+      if (
+        element.RS.result != null &&
+        element.RS.cycles_passed > element.RS.cycles_needed &&
+        this.isBranchPending == false &&
+        this.CDB == null
+      ) {
+        if (
+          element.RS.unit == OpCode.LOAD ||
+          element.RS.unit == OpCode.ADD ||
+          element.RS.unit == OpCode.NOR ||
+          element.RS.unit == OpCode.MUL
+        ) {
+          this.CDB = element.RS.result;
+          for (let i = 0; i < this.RegisterStatus.length; i++) {
+            if (this.RegisterStatus[i] === element.RS.name) {
+              this.Registers[i] = this.CDB;
+              this.RegisterStatus[i] = 0;
+              break;
+            }
+          }
+          for (const element2 of this.RS) {
+            if (element2.Qj == element.RS.name) {
+              element2.Vj = this.CDB;
+              element2.Qj = null;
+            }
+            if (element2.Qk == element.RS.name) {
+              element2.Vk = this.CDB;
+              element2.Qk = null;
+            }
+          }
+          element.RS.busy = false;
+          element.RS.result = null;
+          this.CDB = null;
+          this.WriteBackTracker.push({
+            Instruction: element.Instruction.clone(),
+            clock: this.clock,
+            RS: element.RS,
+          });
+          break;
+        }
+      }
+    }
+  }
+  incrementCyclesPassed(): void {
+    for (const rs of this.RS) {
+      // Skip if not busy or already completed
+      if (!rs.busy || rs.cycles_passed >= rs.cycles_needed) continue;
+
+      // Only increment if operands are ready
+      if (rs.Qj === null && rs.Qk === null) {
+        rs.cycles_passed++;
+      }
+    }
+  }
+  step(): void {
+    this.incrementCyclesPassed();
+    this.Issue();
+    this.execute();
+    this.WriteBack();
+    this.clock++;
   }
 }
