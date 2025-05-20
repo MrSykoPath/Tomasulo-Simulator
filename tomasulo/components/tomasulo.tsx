@@ -218,12 +218,22 @@ class Tomasulo {
     this.RS = [];
   }
 
-  addInstruction(instruction: Instruction) {
+  addInstruction(instruction: Instruction, address: number) {
+    if (address < 0 || address >= this.Memory.length) {
+      throw new Error("Starting address out of bounds");
+    }
     this.Instructions.push(instruction);
+    this.Memory[address] = instruction.encode();
   }
 
-  addInstructions(instructions: Instruction[]) {
-    this.Instructions.push(...instructions);
+  addInstructions(instructions: Instruction[], address: number) {
+    instructions.forEach((instr, index) => {
+      if (address + index < 0 || address + index >= this.Memory.length) {
+        throw new Error("Memory access out of bounds");
+      }
+      this.addInstruction(instr, address + index);
+      this.Memory[address + index] = instr.encode();
+    });
   }
 
   addData(data: Uint16Array, address: number) {
@@ -455,12 +465,28 @@ class Tomasulo {
           element.cycles_passed == element.cycles_needed &&
           this.isBranchPending == false
         ) {
-          element.result = this.Memory[element.A!];
-          this.ExecutedTracker.push({
-            Instruction: element.instruction!.clone(),
-            clock: this.clock,
-            RS: element,
-          });
+          let hazard: boolean = false;
+          for (const element2 of this.RS) {
+            if (
+              element2.unit == OpCode.STORE &&
+              element2.busy == true &&
+              element2.PC_Original! < element.PC_Original! &&
+              element2.A == element.A
+            ) {
+              // If there is a store instruction that is pending and has the same address, we need to wait for it to complete
+              element.cycles_passed = element.cycles_needed - 1;
+              hazard = true;
+              break;
+            }
+          }
+          if (!hazard) {
+            element.result = this.Memory[element.A!];
+            this.ExecutedTracker.push({
+              Instruction: element.instruction!.clone(),
+              clock: this.clock,
+              RS: element,
+            });
+          }
         }
       }
 
@@ -480,17 +506,33 @@ class Tomasulo {
           element.cycles_passed == element.cycles_needed &&
           this.isBranchPending == false
         ) {
-          this.Memory[element.A!] = element.Vk!;
-          element.busy = false;
-          element.Qj = null;
-          element.Qk = null;
-          element.Vj = null;
-          element.Vk = null;
-          this.ExecutedTracker.push({
-            Instruction: element.instruction!.clone(),
-            clock: this.clock,
-            RS: element,
-          });
+          let hazard: boolean = false;
+          for (const element2 of this.RS) {
+            if (
+              (element2.unit == OpCode.LOAD || element2.unit == OpCode.STORE) &&
+              element2.busy == true &&
+              element2.PC_Original! < element.PC_Original! &&
+              element2.A == element.A
+            ) {
+              // If there is a load/store instruction that is pending and has the same address, we need to wait for it to complete
+              element.cycles_passed = element.cycles_needed - 1;
+              hazard = true;
+              break;
+            }
+          }
+          if (!hazard) {
+            this.Memory[element.A!] = element.Vk!;
+            element.busy = false;
+            element.Qj = null;
+            element.Qk = null;
+            element.Vj = null;
+            element.Vk = null;
+            this.ExecutedTracker.push({
+              Instruction: element.instruction!.clone(),
+              clock: this.clock,
+              RS: element,
+            });
+          }
         }
       }
 

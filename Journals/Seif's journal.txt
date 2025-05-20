@@ -1,0 +1,9 @@
+May 16th-1:00PM: Started Implementing Tomasulo's Algorithm in Typescript.
+
+May 16th-6:35PM: Finished a Base version of the Issue function.
+
+May 17th-8:24PM: Fixed some bugs in the Issue Function and started implemented the Execute function.
+
+May 18th-7:17PM: Fixed more bugs, finished the Execute function and started the Write Back function.
+
+May 19th-1:08AM: MORE bugs fixed (There still exists the load-store hazard to deal with) and finished the Write Back function.
