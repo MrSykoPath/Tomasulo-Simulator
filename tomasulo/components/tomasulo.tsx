@@ -1,4 +1,4 @@
-enum OpCode {
+export enum OpCode {
   LOAD,
   STORE,
   BEQ,
@@ -10,7 +10,7 @@ enum OpCode {
   MUL,
 }
 
-class Instruction {
+export class Instruction {
   private opcode: OpCode = OpCode.ADD;
   private rA?: number;
   private rB?: number;
@@ -156,7 +156,7 @@ class Instruction {
   }
 }
 
-class ReservationStation {
+export class ReservationStation {
   name: string;
   unit: OpCode;
   busy: boolean = false;
@@ -174,14 +174,23 @@ class ReservationStation {
   cycles_needed_to_compute_address: number | null = null; // Number of cycles needed to compute the address
   cycles_needed_to_read_write_from_memory: number | null = null; // Number of cycles needed to read/write from memory
 
-  constructor(name: string, unit: OpCode, cycles_needed: number) {
+  constructor(
+    name: string,
+    unit: OpCode,
+    cycles_needed: number,
+    cycles_needed_to_compute_address: number = 0,
+    cycles_needed_to_read_write_from_memory: number = 0
+  ) {
     this.name = name;
     this.unit = unit;
     this.cycles_needed = cycles_needed;
+    this.cycles_needed_to_compute_address = cycles_needed_to_compute_address;
+    this.cycles_needed_to_read_write_from_memory =
+      cycles_needed_to_read_write_from_memory;
   }
 }
 
-class Tomasulo {
+export class Tomasulo {
   Memory: Uint16Array;
   Registers: Uint16Array;
   Instructions: Instruction[];
@@ -217,22 +226,23 @@ class Tomasulo {
     this.Instructions = [];
     this.RS = [];
   }
-
   addInstruction(instruction: Instruction, address: number) {
     if (address < 0 || address >= this.Memory.length) {
       throw new Error("Starting address out of bounds");
     }
+    // Add to Instructions array for tracking purposes
     this.Instructions.push(instruction);
+    // Store the encoded form in memory
     this.Memory[address] = instruction.encode();
   }
-
   addInstructions(instructions: Instruction[], address: number) {
     instructions.forEach((instr, index) => {
       if (address + index < 0 || address + index >= this.Memory.length) {
         throw new Error("Memory access out of bounds");
       }
+      // Use addInstruction to properly add to both arrays
       this.addInstruction(instr, address + index);
-      this.Memory[address + index] = instr.encode();
+      // No need to encode again as addInstruction already does this
     });
   }
 
@@ -250,202 +260,230 @@ class Tomasulo {
     this.PC = address;
   }
 
-  addReservationStation(name: string, unit: OpCode, cycles_needed: number) {
-    this.RS.push(new ReservationStation(name, unit, cycles_needed));
+  addReservationStation(
+    name: string,
+    unit: OpCode,
+    cycles_needed: number,
+    cycles_needed_to_compute_address: number = 0,
+    cycles_needed_to_read_write_from_memory: number = 0
+  ) {
+    this.RS.push(
+      new ReservationStation(
+        name,
+        unit,
+        cycles_needed,
+        cycles_needed_to_compute_address,
+        cycles_needed_to_read_write_from_memory
+      )
+    );
   }
-
   Issue(): void {
-    // Fetch instruction from memory instead of Instructions array
+    // Skip if jump/branch is pending
     if (this.isJumpPending) {
       return;
     }
+
+    // Get instruction from memory at PC location
     const instrAddr = this.PC;
     if (instrAddr < 0 || instrAddr >= this.Memory.length) return;
+
     const encodedInstr = this.Memory[instrAddr];
     if (encodedInstr === 0) return; // treat 0 as NOP or empty
-    const instr = Instruction.decode(encodedInstr);
-    if (this.PC < 65536) {
-      if (instr.getOpcode() == OpCode.LOAD) {
-        for (const element of this.RS) {
-          if (element.busy == false && element.unit == OpCode.LOAD) {
-            if (this.RegisterStatus[instr.getrB()!] == 0) {
-              element.Vj = this.Registers[instr.getrB()!];
-              element.Qj = null;
-            } else {
-              element.Qj = this.RegisterStatus[instr.getrB()!];
-              element.Vj = null;
+
+    try {
+      const instr = Instruction.decode(encodedInstr);
+
+      if (this.PC < 65536) {
+        if (instr.getOpcode() == OpCode.LOAD) {
+          for (const element of this.RS) {
+            if (element.busy == false && element.unit == OpCode.LOAD) {
+              if (this.RegisterStatus[instr.getrB()!] == 0) {
+                element.Vj = this.Registers[instr.getrB()!];
+                element.Qj = null;
+              } else {
+                element.Qj = this.RegisterStatus[instr.getrB()!];
+                element.Vj = null;
+              }
+              element.busy = true;
+              element.Operation = "LOAD";
+              element.instruction = instr.clone();
+              element.PC_Original = this.PC;
+              this.RegisterStatus[instr.getrA()!] =
+                instr.getrA()! == 0 ? 0 : element.name;
+              element.A = instr.getOffset() ?? null;
+              this.IssuedTracker.push({
+                Instruction: instr.clone(),
+                clock: this.clock,
+                RS: element,
+              });
+              this.PC++;
+              if (this.isBranchPending) {
+                this.IssuedAfterBranch++;
+              }
+              break;
             }
-            element.busy = true;
-            element.Operation = "LOAD";
-            element.instruction = instr.clone();
-            element.PC_Original = this.PC;
-            this.RegisterStatus[instr.getrA()!] = element.name;
-            element.A = instr.getOffset() ?? null;
-            this.IssuedTracker.push({
-              Instruction: instr.clone(),
-              clock: this.clock,
-              RS: element,
-            });
-            this.PC++;
-            if (this.isBranchPending) {
-              this.IssuedAfterBranch++;
-            }
-            break;
           }
-        }
-      } else if (instr.getOpcode() == OpCode.STORE) {
-        for (const element of this.RS) {
-          if (element.busy == false && element.unit == OpCode.STORE) {
-            if (this.RegisterStatus[instr.getrB()!] == 0) {
-              element.Vj = this.Registers[instr.getrB()!];
-              element.Qj = null;
-            } else {
-              element.Qj = this.RegisterStatus[instr.getrB()!];
-              element.Vj = null;
+        } else if (instr.getOpcode() == OpCode.STORE) {
+          for (const element of this.RS) {
+            if (element.busy == false && element.unit == OpCode.STORE) {
+              if (this.RegisterStatus[instr.getrB()!] == 0) {
+                element.Vj = this.Registers[instr.getrB()!];
+                element.Qj = null;
+              } else {
+                element.Qj = this.RegisterStatus[instr.getrB()!];
+                element.Vj = null;
+              }
+              element.busy = true;
+              element.A = instr.getOffset() ?? null;
+              if (this.RegisterStatus[instr.getrA()!] == 0) {
+                element.Vk = this.Registers[instr.getrA()!];
+                element.Qk = null;
+              } else {
+                element.Qk = this.RegisterStatus[instr.getrA()!];
+                element.Vk = null;
+              }
+              this.IssuedTracker.push({
+                Instruction: instr.clone(),
+                clock: this.clock,
+                RS: element,
+              });
+              element.instruction = instr.clone();
+              element.PC_Original = this.PC;
+              element.Operation = "STORE";
+              if (this.isBranchPending) {
+                this.IssuedAfterBranch++;
+              }
+              this.PC++;
+              break;
             }
-            element.busy = true;
-            element.A = instr.getOffset() ?? null;
-            if (this.RegisterStatus[instr.getrA()!] == 0) {
-              element.Vk = this.Registers[instr.getrA()!];
-              element.Qk = null;
-            } else {
-              element.Qk = this.RegisterStatus[instr.getrA()!];
-              element.Vk = null;
-            }
-            this.IssuedTracker.push({
-              Instruction: instr.clone(),
-              clock: this.clock,
-              RS: element,
-            });
-            element.instruction = instr.clone();
-            element.PC_Original = this.PC;
-            element.Operation = "STORE";
-            if (this.isBranchPending) {
-              this.IssuedAfterBranch++;
-            }
-            this.PC++;
-            break;
           }
-        }
-      } else if (
-        instr.getOpcode() == OpCode.ADD ||
-        instr.getOpcode() == OpCode.SUB ||
-        instr.getOpcode() == OpCode.NOR ||
-        instr.getOpcode() == OpCode.MUL
-      ) {
-        for (const element of this.RS) {
-          if (
-            element.busy == false &&
-            element.unit ==
-              (instr.getOpcode() == OpCode.MUL
-                ? OpCode.MUL
-                : instr.getOpcode() == OpCode.NOR
-                  ? OpCode.NOR
-                  : instr.getOpcode() == OpCode.ADD
-                    ? OpCode.ADD
-                    : OpCode.ADD)
-          ) {
-            if (this.RegisterStatus[instr.getrB()!] == 0) {
-              element.Vj = this.Registers[instr.getrB()!];
-              element.Qj = null;
-            } else {
-              element.Qj = this.RegisterStatus[instr.getrB()!];
-              element.Vj = null;
-            }
-            if (this.RegisterStatus[instr.getrC()!] == 0) {
-              element.Vk = this.Registers[instr.getrC()!];
-              element.Qk = null;
-            } else {
-              element.Qk = this.RegisterStatus[instr.getrC()!];
-              element.Vk = null;
-            }
-            this.IssuedTracker.push({
-              Instruction: instr.clone(),
-              clock: this.clock,
-              RS: element,
-            });
-            element.busy = true;
-            element.instruction = instr.clone();
-            element.PC_Original = this.PC;
-            element.Operation =
-              instr.getOpcode() == OpCode.ADD
-                ? "ADD"
-                : instr.getOpcode() == OpCode.SUB
-                  ? "SUB"
+        } else if (
+          instr.getOpcode() == OpCode.ADD ||
+          instr.getOpcode() == OpCode.SUB ||
+          instr.getOpcode() == OpCode.NOR ||
+          instr.getOpcode() == OpCode.MUL
+        ) {
+          for (const element of this.RS) {
+            if (
+              element.busy == false &&
+              element.unit ==
+                (instr.getOpcode() == OpCode.MUL
+                  ? OpCode.MUL
                   : instr.getOpcode() == OpCode.NOR
-                    ? "NOR"
-                    : "MUL";
-            this.RegisterStatus[instr.getrA()!] = element.name;
-            this.PC++;
-            if (this.isBranchPending) {
-              this.IssuedAfterBranch++;
+                    ? OpCode.NOR
+                    : instr.getOpcode() == OpCode.ADD
+                      ? OpCode.ADD
+                      : OpCode.ADD)
+            ) {
+              if (this.RegisterStatus[instr.getrB()!] == 0) {
+                element.Vj = this.Registers[instr.getrB()!];
+                element.Qj = null;
+              } else {
+                element.Qj = this.RegisterStatus[instr.getrB()!];
+                element.Vj = null;
+              }
+              if (this.RegisterStatus[instr.getrC()!] == 0) {
+                element.Vk = this.Registers[instr.getrC()!];
+                element.Qk = null;
+              } else {
+                element.Qk = this.RegisterStatus[instr.getrC()!];
+                element.Vk = null;
+              }
+              this.IssuedTracker.push({
+                Instruction: instr.clone(),
+                clock: this.clock,
+                RS: element,
+              });
+              element.busy = true;
+              element.instruction = instr.clone();
+              element.PC_Original = this.PC;
+              element.Operation =
+                instr.getOpcode() == OpCode.ADD
+                  ? "ADD"
+                  : instr.getOpcode() == OpCode.SUB
+                    ? "SUB"
+                    : instr.getOpcode() == OpCode.NOR
+                      ? "NOR"
+                      : "MUL";
+              this.RegisterStatus[instr.getrA()!] =
+                instr.getrA()! == 0 ? 0 : element.name;
+              this.PC++;
+              if (this.isBranchPending) {
+                this.IssuedAfterBranch++;
+              }
+              break;
             }
-            break;
           }
-        }
-      } else if (instr.getOpcode() == OpCode.BEQ) {
-        for (const element of this.RS) {
-          if (element.busy == false && element.unit == OpCode.BEQ) {
-            if (this.RegisterStatus[instr.getrA()!] == 0) {
-              element.Vj = this.Registers[instr.getrA()!];
-              element.Qj = null;
-            } else {
-              element.Qj = this.RegisterStatus[instr.getrA()!];
-              element.Vj = null;
+        } else if (instr.getOpcode() == OpCode.BEQ) {
+          for (const element of this.RS) {
+            if (element.busy == false && element.unit == OpCode.BEQ) {
+              if (this.RegisterStatus[instr.getrA()!] == 0) {
+                element.Vj = this.Registers[instr.getrA()!];
+                element.Qj = null;
+              } else {
+                element.Qj = this.RegisterStatus[instr.getrA()!];
+                element.Vj = null;
+              }
+              if (this.RegisterStatus[instr.getrB()!] == 0) {
+                element.Vk = this.Registers[instr.getrB()!];
+                element.Qk = null;
+              } else {
+                element.Qk = this.RegisterStatus[instr.getrB()!];
+                element.Vk = null;
+              }
+              this.IssuedTracker.push({
+                Instruction: instr.clone(),
+                clock: this.clock,
+                RS: element,
+              });
+              element.A = instr.getOffset() ?? null;
+              if (this.isBranchPending) {
+                this.IssuedAfterBranch++;
+              }
+              element.Operation = "BEQ";
+              element.busy = true;
+              element.instruction = instr.clone();
+              element.PC_Original = this.PC;
+              this.isBranchPending = true;
+              this.branchInstructions++;
+              this.PC++;
+              break;
             }
-            if (this.RegisterStatus[instr.getrB()!] == 0) {
-              element.Vk = this.Registers[instr.getrB()!];
-              element.Qk = null;
-            } else {
-              element.Qk = this.RegisterStatus[instr.getrB()!];
-              element.Vk = null;
-            }
-            this.IssuedTracker.push({
-              Instruction: instr.clone(),
-              clock: this.clock,
-              RS: element,
-            });
-            element.A = instr.getOffset() ?? null;
-            if (this.isBranchPending) {
-              this.IssuedAfterBranch++;
-            }
-            element.Operation = "BEQ";
-            element.busy = true;
-            element.instruction = instr.clone();
-            element.PC_Original = this.PC;
-            this.isBranchPending = true;
-            this.branchInstructions++;
-            break;
           }
-        }
-      } else if (
-        instr.getOpcode() == OpCode.CALL ||
-        instr.getOpcode() == OpCode.RET
-      ) {
-        for (const element of this.RS) {
-          if (element.busy == false && element.unit == OpCode.CALL) {
-            element.busy = true;
-            element.A =
-              instr.getOpcode() == OpCode.CALL
-                ? (instr.getLabel() ?? null)
-                : this.Registers[1];
-            element.Operation =
-              instr.getOpcode() == OpCode.CALL ? "CALL" : "RET";
-            this.IssuedTracker.push({
-              Instruction: instr.clone(),
-              clock: this.clock,
-              RS: element,
-            });
-            element.instruction = instr.clone();
-            element.PC_Original = this.PC;
-            this.isJumpPending = true;
-            if (this.isBranchPending) {
-              this.IssuedAfterBranch++;
+        } else if (
+          instr.getOpcode() == OpCode.CALL ||
+          instr.getOpcode() == OpCode.RET
+        ) {
+          for (const element of this.RS) {
+            if (element.busy == false && element.unit == OpCode.CALL) {
+              element.busy = true;
+              element.A =
+                instr.getOpcode() == OpCode.CALL
+                  ? (instr.getLabel() ?? null)
+                  : this.Registers[1];
+              element.Operation =
+                instr.getOpcode() == OpCode.CALL ? "CALL" : "RET";
+              this.IssuedTracker.push({
+                Instruction: instr.clone(),
+                clock: this.clock,
+                RS: element,
+              });
+              element.instruction = instr.clone();
+              element.PC_Original = this.PC;
+              this.isJumpPending = true;
+              this.PC++; // Increment PC for CALL/RET instructions
+              if (this.isBranchPending) {
+                this.IssuedAfterBranch++;
+              }
+              break;
             }
-            break;
           }
         }
       }
+    } catch (error) {
+      console.error("Error decoding instruction at PC:", this.PC, error);
+      // Skip this instruction and move to the next one
+      this.PC++;
     }
   }
 
@@ -459,7 +497,6 @@ class Tomasulo {
         ) {
           element.A = element.Vj! + element.A!;
         }
-
         if (
           element.busy == true &&
           element.cycles_passed == element.cycles_needed &&
@@ -470,8 +507,9 @@ class Tomasulo {
             if (
               element2.unit == OpCode.STORE &&
               element2.busy == true &&
-              element2.PC_Original! < element.PC_Original! &&
-              element2.A == element.A
+              element2.A == element.A &&
+              this.getLatestIssueClock(element2) <
+                this.getLatestIssueClock(element)
             ) {
               // If there is a store instruction that is pending and has the same address, we need to wait for it to complete
               element.cycles_passed = element.cycles_needed - 1;
@@ -481,6 +519,8 @@ class Tomasulo {
           }
           if (!hazard) {
             element.result = this.Memory[element.A!];
+            // Don't reset busy flag yet - this happens in WriteBack
+            // But track that we executed this instruction
             this.ExecutedTracker.push({
               Instruction: element.instruction!.clone(),
               clock: this.clock,
@@ -511,8 +551,9 @@ class Tomasulo {
             if (
               (element2.unit == OpCode.LOAD || element2.unit == OpCode.STORE) &&
               element2.busy == true &&
-              element2.PC_Original! < element.PC_Original! &&
-              element2.A == element.A
+              element2.A == element.A &&
+              this.getLatestIssueClock(element2) <
+                this.getLatestIssueClock(element)
             ) {
               // If there is a load/store instruction that is pending and has the same address, we need to wait for it to complete
               element.cycles_passed = element.cycles_needed - 1;
@@ -522,16 +563,49 @@ class Tomasulo {
           }
           if (!hazard) {
             this.Memory[element.A!] = element.Vk!;
+
+            // Clone the instruction before clearing the fields
+            const instrClone = element.instruction!.clone();
+
+            // Save the PC_Original before clearing it
+            const originalPC = element.PC_Original;
+
+            // Add to executed tracker first, before clearing fields
+            this.ExecutedTracker.push({
+              Instruction: instrClone,
+              clock: this.clock,
+              RS: element,
+            });
+
+            // Create a copy of the RS for the WriteBackTracker
+            const rsCopy = new ReservationStation(
+              element.name,
+              element.unit,
+              element.cycles_needed,
+              element.cycles_needed_to_compute_address ?? 0,
+              element.cycles_needed_to_read_write_from_memory ?? 0
+            );
+            rsCopy.PC_Original = originalPC;
+
+            // Also add to WriteBackTracker since STORE operations are complete after execution
+            this.WriteBackTracker.push({
+              Instruction: instrClone,
+              clock: this.clock,
+              RS: rsCopy,
+            });
+
+            // Now clear all the fields
             element.busy = false;
             element.Qj = null;
             element.Qk = null;
             element.Vj = null;
             element.Vk = null;
-            this.ExecutedTracker.push({
-              Instruction: element.instruction!.clone(),
-              clock: this.clock,
-              RS: element,
-            });
+            element.A = null;
+            element.result = null;
+            element.Operation = null;
+            element.instruction = null;
+            element.PC_Original = null;
+            element.cycles_passed = 0;
           }
         }
       }
@@ -566,16 +640,47 @@ class Tomasulo {
             this.PC = element.PC_Original! + 1;
             this.isBranchPending = false;
           }
+
+          // Clone the instruction before clearing the fields
+          const instrClone = element.instruction!.clone();
+
+          // Save the PC_Original before clearing it
+          const originalPC = element.PC_Original;
+
+          // Add to executed tracker first, before clearing fields
+          this.ExecutedTracker.push({
+            Instruction: instrClone,
+            clock: this.clock,
+            RS: element,
+          });
+
+          // Create a copy of the RS for the WriteBackTracker
+          const rsCopy = new ReservationStation(
+            element.name,
+            element.unit,
+            element.cycles_needed
+          );
+          rsCopy.PC_Original = originalPC;
+
+          // Also add to WriteBackTracker for BEQ operations
+          this.WriteBackTracker.push({
+            Instruction: instrClone,
+            clock: this.clock,
+            RS: rsCopy,
+          });
+
+          // Now clear all the fields
           element.busy = false;
           element.Qj = null;
           element.Qk = null;
           element.Vj = null;
           element.Vk = null;
-          this.ExecutedTracker.push({
-            Instruction: element.instruction!.clone(),
-            clock: this.clock,
-            RS: element,
-          });
+          element.A = null;
+          element.result = null;
+          element.Operation = null;
+          element.instruction = null;
+          element.PC_Original = null;
+          element.cycles_passed = 0;
         }
       }
 
@@ -592,21 +697,51 @@ class Tomasulo {
             this.PC = element.A!;
             this.isJumpPending = false;
           }
-
           if (element.Operation == "RET") {
             this.PC = element.A!;
             this.isJumpPending = false;
           }
+
+          // Clone the instruction before clearing the fields
+          const instrClone = element.instruction!.clone();
+
+          // Save the PC_Original before clearing it
+          const originalPC = element.PC_Original;
+
+          // Add to executed tracker first, before clearing fields
+          this.ExecutedTracker.push({
+            Instruction: instrClone,
+            clock: this.clock,
+            RS: element,
+          });
+
+          // Create a copy of the RS for the WriteBackTracker
+          const rsCopy = new ReservationStation(
+            element.name,
+            element.unit,
+            element.cycles_needed
+          );
+          rsCopy.PC_Original = originalPC;
+
+          // Also add to WriteBackTracker for CALL/RET operations
+          this.WriteBackTracker.push({
+            Instruction: instrClone,
+            clock: this.clock,
+            RS: rsCopy,
+          });
+
+          // Now clear all the fields
           element.busy = false;
           element.Qj = null;
           element.Qk = null;
           element.Vj = null;
           element.Vk = null;
-          this.ExecutedTracker.push({
-            Instruction: element.instruction!.clone(),
-            clock: this.clock,
-            RS: element,
-          });
+          element.A = null;
+          element.result = null;
+          element.Operation = null;
+          element.instruction = null;
+          element.PC_Original = null;
+          element.cycles_passed = 0;
         }
       }
       //-------------------------------------------------------------
@@ -679,7 +814,7 @@ class Tomasulo {
           this.CDB = element.RS.result;
           for (let i = 0; i < this.RegisterStatus.length; i++) {
             if (this.RegisterStatus[i] === element.RS.name) {
-              this.Registers[i] = this.CDB;
+              this.Registers[i] = (i == 0 ? 0 : this.CDB) as number;
               this.RegisterStatus[i] = 0;
               break;
             }
@@ -694,14 +829,40 @@ class Tomasulo {
               element2.Qk = null;
             }
           }
-          element.RS.busy = false;
-          element.RS.result = null;
-          this.CDB = null;
+
+          // Save PC_Original before clearing it
+          const originalPC = element.RS.PC_Original;
+
+          // Create a copy of the reservation station with the preserved PC_Original
+          const reservationStationCopy = new ReservationStation(
+            element.RS.name,
+            element.RS.unit,
+            element.RS.cycles_needed,
+            element.RS.cycles_needed_to_compute_address ?? 0,
+            element.RS.cycles_needed_to_read_write_from_memory ?? 0
+          );
+          reservationStationCopy.PC_Original = originalPC;
+
+          // Add to WriteBackTracker with the saved PC_Original
           this.WriteBackTracker.push({
             Instruction: element.Instruction.clone(),
             clock: this.clock,
-            RS: element.RS,
+            RS: reservationStationCopy,
           });
+
+          // Now clear all the fields
+          element.RS.busy = false;
+          element.RS.result = null;
+          this.CDB = null;
+          element.RS.Operation = null;
+          element.RS.instruction = null;
+          element.RS.PC_Original = null;
+          element.RS.Vj = null;
+          element.RS.Vk = null;
+          element.RS.Qj = null;
+          element.RS.Qk = null;
+          element.RS.cycles_passed = 0;
+          element.RS.A = null;
           break;
         }
       }
@@ -709,8 +870,18 @@ class Tomasulo {
   }
   incrementCyclesPassed(): void {
     for (const rs of this.RS) {
-      // Skip if not busy or already completed
-      if (!rs.busy || rs.cycles_passed >= rs.cycles_needed) continue;
+      // Skip if not busy
+      if (!rs.busy) continue;
+
+      // If the instruction has completed execution but hasn't been written back yet,
+      // continue incrementing cycle count to enable write back
+      if (rs.result != null && rs.cycles_passed == rs.cycles_needed) {
+        rs.cycles_passed++;
+        continue;
+      }
+
+      // Skip if already completed
+      if (rs.cycles_passed > rs.cycles_needed) continue;
 
       // Only increment if operands are ready
       if (rs.Qj === null && rs.Qk === null) {
@@ -718,6 +889,87 @@ class Tomasulo {
       }
     }
   }
+  // Helper method to get the index of a reservation station in the IssuedTracker
+  getIssuedIndex(rs: ReservationStation): number {
+    const index = this.IssuedTracker.findIndex((entry) => entry.RS === rs);
+    return index === -1 ? Infinity : index; // Return Infinity if not found to ensure it's greater than any valid index
+  }
+
+  // Helper method to get the most recent issue clock cycle for a reservation station
+  getLatestIssueClock(rs: ReservationStation): number {
+    // Find all entries for this RS in the IssuedTracker
+    const entries = this.IssuedTracker.filter((entry) => entry.RS === rs);
+    if (entries.length === 0) return Infinity; // No entries found
+
+    // Get the entry with the highest clock value
+    return entries.reduce(
+      (latestClock, entry) =>
+        entry.clock > latestClock ? entry.clock : latestClock,
+      entries[0].clock
+    );
+  }
+  // Helper method to get the execution history of an instruction at a given address
+  getInstructionStatus(address: number): {
+    isIssued: boolean;
+    isExecuted: boolean;
+    isWrittenBack: boolean;
+    cycleIssued?: number;
+    cycleExecuted?: number;
+    cycleWrittenBack?: number;
+  } {
+    // Find all entries for this address in each tracker
+    const issuedEntries = this.IssuedTracker.filter(
+      (t) => t.RS.PC_Original === address
+    );
+    const executedEntries = this.ExecutedTracker.filter(
+      (t) => t.RS.PC_Original === address
+    );
+    const writtenBackEntries = this.WriteBackTracker.filter(
+      (t) => t.RS.PC_Original === address
+    );
+
+    // Check if we have any entries
+    const isIssued = issuedEntries.length > 0;
+    const isExecuted = executedEntries.length > 0;
+    const isWrittenBack = writtenBackEntries.length > 0;
+
+    // Get the most recent (highest clock) entry from each tracker
+    const latestIssuedEntry =
+      issuedEntries.length > 0
+        ? issuedEntries.reduce((latest, current) =>
+            current.clock > latest.clock ? current : latest
+          )
+        : undefined;
+
+    const latestExecutedEntry =
+      executedEntries.length > 0
+        ? executedEntries.reduce((latest, current) =>
+            current.clock > latest.clock ? current : latest
+          )
+        : undefined;
+
+    const latestWrittenBackEntry =
+      writtenBackEntries.length > 0
+        ? writtenBackEntries.reduce((latest, current) =>
+            current.clock > latest.clock ? current : latest
+          )
+        : undefined;
+
+    // Extract the clock cycles from the most recent entries
+    const cycleIssued = latestIssuedEntry?.clock;
+    const cycleExecuted = latestExecutedEntry?.clock;
+    const cycleWrittenBack = latestWrittenBackEntry?.clock;
+
+    return {
+      isIssued,
+      isExecuted,
+      isWrittenBack,
+      cycleIssued,
+      cycleExecuted,
+      cycleWrittenBack,
+    };
+  }
+
   step(): void {
     this.incrementCyclesPassed();
     this.Issue();

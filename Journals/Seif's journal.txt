@@ -7,3 +7,8 @@ May 17th-8:24PM: Fixed some bugs in the Issue Function and started implemented t
 May 18th-7:17PM: Fixed more bugs, finished the Execute function and started the Write Back function.
 
 May 19th-1:08AM: MORE bugs fixed (There still exists the load-store hazard to deal with) and finished the Write Back function.
+
+May 20th-6:41PM: Started fixing a memory bug and Load-Store Hazard
+
+May 20th-7:20PM: Done with them
+
